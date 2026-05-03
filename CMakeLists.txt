@@ -1,0 +1,76 @@
+cmake_minimum_required(VERSION 3.20)
+project(chaincpp VERSION 0.1.0 LANGUAGES CXX)
+
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Build options
+option(BUILD_TESTS "Build tests" ON)
+option(BUILD_EXAMPLES "Build examples" ON)
+
+# Hardened compilation flags
+# Hardened compilation flags
+if(MSVC)
+    add_compile_options(/W4 /WX /guard:cf /DYNAMICBASE /NXCOMPAT)
+    add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
+else()
+    # Standard warnings
+    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+
+    if(WIN32)
+        add_link_options(-static -static-libgcc -static-libstdc++)
+    endif()
+    
+    # ONLY apply -z flags if we are on a Unix/Linux system
+    if(UNIX AND NOT APPLE)
+        add_link_options(-pie -Wl,-z,now,-z,relro)
+    endif()
+
+    # REMOVED the WIN32 add_link_options block that was causing 0xc0000139
+endif()
+
+# Main library
+add_library(chaincpp STATIC
+    src/security/sandbox.cpp
+)
+
+target_include_directories(chaincpp PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Set properties for better debugging
+target_compile_definitions(chaincpp PRIVATE $<$<CONFIG:Debug>:CHAINCPP_DEBUG>)
+
+# Testing
+if(BUILD_TESTS)
+    enable_testing()
+    
+    add_executable(test_sandbox
+        tests/test_sandbox.cpp
+    )
+    target_link_libraries(test_sandbox chaincpp)
+    target_compile_definitions(test_sandbox PRIVATE CHAINCPP_TESTING)
+    add_test(NAME SandboxSecurityTests COMMAND test_sandbox)
+endif()
+
+# Examples
+if(BUILD_EXAMPLES)
+    add_executable(basic_usage
+        examples/basic_usage.cpp
+    )
+    target_link_libraries(basic_usage chaincpp)
+endif()
+
+# Installation
+install(TARGETS chaincpp
+    EXPORT chaincppTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)
+
+install(DIRECTORY include/chaincpp DESTINATION include)
