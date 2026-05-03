@@ -34,6 +34,7 @@ endif()
 # Main library
 add_library(chaincpp STATIC
     src/security/sandbox.cpp
+    src/core/prompt.cpp
 )
 
 target_include_directories(chaincpp PUBLIC
@@ -54,6 +55,12 @@ if(BUILD_TESTS)
     target_link_libraries(test_sandbox chaincpp)
     target_compile_definitions(test_sandbox PRIVATE CHAINCPP_TESTING)
     add_test(NAME SandboxSecurityTests COMMAND test_sandbox)
+
+    add_executable(test_prompt
+        tests/test_prompt.cpp
+    )
+    target_link_libraries(test_prompt chaincpp)
+    add_test(NAME PromptSecurityTests COMMAND test_prompt)
 endif()
 
 # Examples
@@ -62,6 +69,11 @@ if(BUILD_EXAMPLES)
         examples/basic_usage.cpp
     )
     target_link_libraries(basic_usage chaincpp)
+
+    add_executable(prompt_example
+        examples/prompt_example.cpp
+    )
+    target_link_libraries(prompt_example chaincpp)
 endif()
 
 # Installation
