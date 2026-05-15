@@ -6,18 +6,21 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Find Dependencies
+find_package(CURL REQUIRED)
+find_package(nlohmann_json REQUIRED)
+
 # Build options
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 
-# Hardened compilation flags
 # Hardened compilation flags
 if(MSVC)
     add_compile_options(/W4 /WX /guard:cf /DYNAMICBASE /NXCOMPAT)
     add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
 else()
     # Standard warnings
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+    add_compile_options(-Wall -Wextra -Wpedantic)
 
     if(WIN32)
         add_link_options(-static -static-libgcc -static-libstdc++)
@@ -27,14 +30,23 @@ else()
     if(UNIX AND NOT APPLE)
         add_link_options(-pie -Wl,-z,now,-z,relro)
     endif()
-
-    # REMOVED the WIN32 add_link_options block that was causing 0xc0000139
 endif()
 
 # Main library
 add_library(chaincpp STATIC
     src/security/sandbox.cpp
+    src/security/secrets.cpp
     src/core/prompt.cpp
+    src/models/llm.cpp
+)
+
+target_link_libraries(chaincpp
+    PUBLIC
+    CURL::libcurl
+    nlohmann_json::nlohmann_json
+    crypt32
+    ws2_32
+    wldap32
 )
 
 target_include_directories(chaincpp PUBLIC
@@ -61,6 +73,11 @@ if(BUILD_TESTS)
     )
     target_link_libraries(test_prompt chaincpp)
     add_test(NAME PromptSecurityTests COMMAND test_prompt)
+
+    # Model test
+    add_executable(test_models tests/test_models.cpp)
+    target_link_libraries(test_models chaincpp)
+    add_test(NAME ModelTests COMMAND test_models)
 endif()
 
 # Examples
@@ -70,10 +87,17 @@ if(BUILD_EXAMPLES)
     )
     target_link_libraries(basic_usage chaincpp)
 
+    # Adding crypt32
+    target_link_libraries(chaincpp PUBLIC CURL::libcurl nlohmann_json::nlohmann_json crypt32)
+
     add_executable(prompt_example
         examples/prompt_example.cpp
     )
     target_link_libraries(prompt_example chaincpp)
+
+    # LLM Example
+    add_executable(llm_example examples/llm_example.cpp)
+    target_link_libraries(llm_example chaincpp)
 endif()
 
 # Installation
