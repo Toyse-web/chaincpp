@@ -26,9 +26,7 @@ Message Message::tool(std::string content, std::string name) {
     return {Role::TOOL, std::move(content), std::move(name)};
 }
 
-// ============================================================================
 // CURL Helpers
-// ============================================================================
 
 struct CurlGlobalInit {
     CurlGlobalInit() { curl_global_init(CURL_GLOBAL_ALL); }
@@ -47,13 +45,13 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, void* us
     size_t total_size = size * nmemb;
     auto* data = static_cast<WriteData*>(userp);
     
-    if (data->stream_callback && data->stream_callback) {
+    if (data && data->stream_callback) {
         std::string_view chunk(static_cast<char*>(contents), total_size);
         // Note: In production, you'd handle the Result here
         (*data->stream_callback)(chunk);
     }
     
-    if (data->buffer) {
+    if (data && data->buffer) {
         data->buffer->append(static_cast<char*>(contents), total_size);
     }
     
@@ -88,7 +86,7 @@ static security::Result<std::string> curl_request(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout.count());
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     
@@ -111,10 +109,11 @@ static security::Result<std::string> curl_request(
     return security::Result<std::string>::ok(std::move(response));
 }
 
-// ============================================================================
 // OpenAI Implementation
-// ============================================================================
 
+security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create() {
+    return create(Config());
+}
 security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create(Config cfg) {
     auto key_result = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
     if (key_result.is_err()) {
@@ -210,10 +209,11 @@ size_t OpenAIChat::count_tokens(const std::string& text) const {
     return text.length() / 4;
 }
 
-// ============================================================================
 // Anthropic Implementation
-// ============================================================================
 
+security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() {
+    return create(Config());
+}
 security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create(Config cfg) {
     auto key_result = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
     if (key_result.is_err()) {
@@ -289,15 +289,15 @@ size_t AnthropicChat::count_tokens(const std::string& text) const {
     return text.length() / 4;
 }
 
-// ============================================================================
 // LocalLLM Implementation (stub - requires llama.cpp integration)
-// ============================================================================
 
 class LocalLLM::Impl {
 public:
     Impl(const LocalLLM::Config& cfg) : config_(cfg) {}
     
-    security::Result<std::string> generate(const std::vector<Message>& messages, const ModelConfig& config) {
+    security::Result<std::string> generate(
+        [[maybe_unused]] const std::vector<Message>& messages,
+        [[maybe_unused]] const ModelConfig& config) {
         // Stub - will integrate with llama.cpp
         return security::Result<std::string>::ok("Local LLM response (placeholder)");
     }
