@@ -35,8 +35,8 @@ using StreamCallback = std::function<security::Result<void>(std::string_view chu
 // Model configuration
 struct ModelConfig {
     std::string model_name = "gpt-3.5-turbo";
-    double temperature = 0.7;
-    double top_p = 1.0;
+    float temperature = 0.7f;
+    float top_p = 1.0f;
     int max_tokens = 1000;
     std::chrono::seconds timeout{30};
     size_t max_retries = 3;
@@ -78,10 +78,11 @@ public:
     struct Config {
         std::string api_key_env_var = "OPENAI_API_KEY";
         std::string base_url = "https://api.openai.com/v1";
-        std::string organization;  // Optional org ID
+        std::string organization;
     };
     
-    static security::Result<std::unique_ptr<OpenAIChat>> create(Config cfg = {});
+    static security::Result<std::unique_ptr<OpenAIChat>> create();
+    static security::Result<std::unique_ptr<OpenAIChat>> create(Config cfg);
     ~OpenAIChat();
     
     security::Result<std::string> generate(
@@ -110,9 +111,7 @@ private:
     );
 };
 
-// ============================================================================
 // Anthropic Implementation
-// ============================================================================
 
 class AnthropicChat : public BaseLLM {
 public:
@@ -122,7 +121,8 @@ public:
         std::string version = "2023-06-01";
     };
     
-    static security::Result<std::unique_ptr<AnthropicChat>> create(Config cfg = {});
+    static security::Result<std::unique_ptr<AnthropicChat>> create();
+    static security::Result<std::unique_ptr<AnthropicChat>> create(Config cfg);
     ~AnthropicChat();
     
     security::Result<std::string> generate(
