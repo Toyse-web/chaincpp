@@ -1,15 +1,14 @@
 #include "chaincpp/models/llm.hpp"
 #include "chaincpp/core/prompt.hpp"
 #include <iostream>
-#include <map>      // Added: Required for std::map
-#include <vector>   // Added: Required for std::vector
-#include <string>   // Added: Required for std::string
+#include <map>
+#include <vector>
+#include <string>
 
 using namespace chaincpp::models;
 using namespace chaincpp::core;
 
 int main() {
-    // FIXED: Using standard ASCII characters to prevent encoding errors on Windows terminal
     std::cout << "\n========================================\n";
     std::cout << "|   chaincpp - LLM Integration          |\n";
     std::cout << "|        Secure API Calls               |\n";
@@ -26,13 +25,17 @@ int main() {
     }
     
     auto prompt = prompt_result.value();
+
+    // Pass custom OpenRouter endpoint configurations
+    OpenAIChat::Config router_config;
+    router_config.base_url = "https://api.openrouter.ai";
+    router_config.api_key_env_var = "OPENROUTER_API_KEY"; // Searches for this env var instead of OPENAI_API_KEY
     
-    // Try to create OpenAI client (requires API key)
-    auto openai_result = OpenAIChat::create();
+    auto openai_result = OpenAIChat::create(router_config);
     
     if (openai_result.is_err()) {
-        std::cout << "Warning: OpenAI client not available: " << openai_result.error() << "\n";
-        std::cout << "Set OPENAI_API_KEY environment variable to use OpenAI\n\n";
+        std::cout << "Warning: OpenRouter client not available: " << openai_result.error() << "\n";
+        std::cout << "Set OPENROUTER_API_KEY environment variable to use OpenRouter\n\n";
         
         // Fall back to local model
         std::cout << "Using local LLM (placeholder)...\n";
@@ -40,7 +43,6 @@ int main() {
         
         if (local_result.is_ok()) {
             auto llm = std::move(local_result.value());
-            
             std::map<std::string, std::string> vars = {
                 {"question", "What is C++?"}
             };
@@ -59,7 +61,11 @@ int main() {
         }
     } else {
         auto llm = std::move(openai_result.value());
-        std::cout << "OpenAI client ready\n\n";
+        std::cout << "OpenRouter client ready\n\n";
+
+        // Create a base configuration selecting a free model
+        ModelConfig default_cfg;
+        default_cfg.model_name = "google/gemma-2-9b-it:free";
         
         // Example 1: Simple chat
         std::cout << "Example 1: Simple Chat\n";
@@ -70,7 +76,7 @@ int main() {
             Message::user("What is the capital of Nigeria?")
         };
         
-        auto response = llm->generate(messages);
+        auto response = llm->generate(messages, default_cfg);
         if (response.is_ok()) {
             std::cout << "User: What is the capital of Nigeria?\n";
             std::cout << "Assistant: " << response.value() << "\n\n";
@@ -92,6 +98,7 @@ int main() {
             };
             
             auto qa_response = llm->generate(qa_messages, ModelConfig{
+                .model_name = "google/gemma-2-9b-it:free",
                 .temperature = 0.5f, // Added 'f' to clarify float type
                 .max_tokens = 200
             });
@@ -113,7 +120,10 @@ int main() {
                 std::cout << chunk << std::flush;
                 return chaincpp::security::Result<void>::ok();
             },
-            ModelConfig{.max_tokens = 50}
+            ModelConfig{
+                .model_name = "google/gemma-2-9b-it:free",
+                .max_tokens = 50
+            }
         );
         
         if (stream_result.is_err()) {
@@ -130,14 +140,14 @@ int main() {
         };
         
         std::vector<std::string> user_msgs = {
-            "My name is Alice",
+            "My name is Toyib. Can you remember that?",
             "What's my name?"
         };
         
         for (const auto& user_msg : user_msgs) {
             conversation.push_back(Message::user(user_msg));
             
-            auto reply = llm->generate(conversation);
+            auto reply = llm->generate(conversation, default_cfg);
             if (reply.is_ok()) {
                 conversation.push_back(Message::assistant(reply.value()));
                 std::cout << "User: " << user_msg << "\n";
