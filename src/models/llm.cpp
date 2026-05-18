@@ -86,6 +86,12 @@ static security::Result<std::string> curl_request(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
+    // Force IPv4 to avoid potential issues in some environments
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    // Set a reasonable timeout and disable signals for multi-threaded environments
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    // Disable DNS caching to ensure fresh lookups (optional, can be tweaked based on needs)
+    curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
