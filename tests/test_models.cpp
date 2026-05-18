@@ -15,19 +15,19 @@ void test_secrets_manager() {
     secure_string test_key("sk-test123456789");
     auto store_result = mgr.store_key("test_service", test_key);
     assert(store_result.is_ok());
-    std::cout << "  ✓ Key stored\n";
+    std::cout << "   Key stored\n";
     
     auto retrieve_result = mgr.get_key("test_service");
     assert(retrieve_result.is_ok());
     assert(retrieve_result.value().to_string() == "sk-test123456789");
-    std::cout << "  ✓ Key retrieved\n";
+    std::cout << "   Key retrieved\n";
     
     // Remove
     auto remove_result = mgr.remove_key("test_service");
     assert(remove_result.is_ok());
-    std::cout << "  ✓ Key removed\n";
+    std::cout << "   Key removed\n";
     
-    std::cout << "✓ SecretsManager tests passed\n\n";
+    std::cout << " SecretsManager tests passed\n\n";
 }
 
 void test_openai_creation() {
@@ -37,12 +37,12 @@ void test_openai_creation() {
     auto result = OpenAIChat::create();
     
     if (result.is_ok()) {
-        std::cout << "  ✓ OpenAI client created (requires OPENAI_API_KEY env var)\n";
+        std::cout << "   OpenAI client created (requires OPENAI_API_KEY env var)\n";
     } else {
         std::cout << "  ℹ OpenAI client not created (no API key): " << result.error() << "\n";
     }
     
-    std::cout << "✓ OpenAI creation test complete\n\n";
+    std::cout << " OpenAI creation test complete\n\n";
 }
 
 void test_message_creation() {
@@ -58,8 +58,8 @@ void test_message_creation() {
     auto assistant_msg = Message::assistant("Hi there");
     assert(assistant_msg.role == Message::Role::ASSISTANT);
     
-    std::cout << "  ✓ All message types work\n";
-    std::cout << "✓ Message tests passed\n\n";
+    std::cout << "   All message types work\n";
+    std::cout << " Message tests passed\n\n";
 }
 
 void test_token_counting() {
@@ -69,10 +69,10 @@ void test_token_counting() {
     if (openai.is_ok()) {
         size_t tokens = openai.value()->count_tokens("Hello world");
         assert(tokens > 0);
-        std::cout << "  ✓ Token counting works\n";
+        std::cout << "   Token counting works\n";
     }
     
-    std::cout << "✓ Token counting tests complete\n\n";
+    std::cout << " Token counting tests complete\n\n";
 }
 
 int main() {
