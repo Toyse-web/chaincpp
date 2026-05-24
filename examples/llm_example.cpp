@@ -41,7 +41,7 @@ int main() {
 
     // Pass custom OpenRouter endpoint configurations
     OpenAIChat::Config router_config;
-    router_config.base_url = "https://openrouter.ai"; // OpenRouter endpoint
+    router_config.base_url = "https://openrouter.ai/api/v1"; // OpenRouter endpoint
     router_config.api_key_env_var = "OPENROUTER_API_KEY"; // Searches for this env var instead of OPENAI_API_KEY
     
     auto openai_result = OpenAIChat::create(router_config);
@@ -78,7 +78,7 @@ int main() {
 
         // Create a base configuration selecting a free model
         ModelConfig test_config;
-        test_config.model_name = "google/gemma-2-9b-it:free";
+        test_config.model_name = "meta-llama/llama-3-8b-instruct";
         test_config.temperature = 0.5f; // Added 'f' to clarify float type
         test_config.max_tokens = 200;
         test_config.timeout = std::chrono::seconds(60);
@@ -114,7 +114,7 @@ int main() {
             };
             
             auto qa_response = llm->generate(qa_messages, ModelConfig{
-                .model_name = "google/gemma-2-9b-it:free",
+                .model_name = "meta-llama/llama-3-8b-instruct",
                 .temperature = 0.5f, // Added 'f' to clarify float type
                 .max_tokens = 200
             });
@@ -137,7 +137,7 @@ int main() {
                 return chaincpp::security::Result<void>::ok();
             },
             ModelConfig{
-                .model_name = "google/gemma-2-9b-it:free",
+                .model_name = "meta-llama/llama-3-8b-instruct",
                 .max_tokens = 50
             }
         );
