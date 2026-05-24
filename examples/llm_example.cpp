@@ -5,10 +5,23 @@
 #include <vector>
 #include <string>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 using namespace chaincpp::models;
 using namespace chaincpp::core;
 
 int main() {
+    #ifdef _WIN32
+        // Force Windows to initialize network sockets for this console app
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            std::cerr << "Failed to initialize Winsock network layer. \n";
+            return 1;
+        }
+    #endif
+
     std::cout << "\n========================================\n";
     std::cout << "|   chaincpp - LLM Integration          |\n";
     std::cout << "|        Secure API Calls               |\n";
@@ -28,7 +41,7 @@ int main() {
 
     // Pass custom OpenRouter endpoint configurations
     OpenAIChat::Config router_config;
-    router_config.base_url = "https://api.openrouter.ai";
+    router_config.base_url = "https://openrouter.ai"; // OpenRouter endpoint
     router_config.api_key_env_var = "OPENROUTER_API_KEY"; // Searches for this env var instead of OPENAI_API_KEY
     
     auto openai_result = OpenAIChat::create(router_config);
@@ -64,8 +77,11 @@ int main() {
         std::cout << "OpenRouter client ready\n\n";
 
         // Create a base configuration selecting a free model
-        ModelConfig default_cfg;
-        default_cfg.model_name = "google/gemma-2-9b-it:free";
+        ModelConfig test_config;
+        test_config.model_name = "google/gemma-2-9b-it:free";
+        test_config.temperature = 0.5f; // Added 'f' to clarify float type
+        test_config.max_tokens = 200;
+        test_config.timeout = std::chrono::seconds(60);
         
         // Example 1: Simple chat
         std::cout << "Example 1: Simple Chat\n";
@@ -76,7 +92,7 @@ int main() {
             Message::user("What is the capital of Nigeria?")
         };
         
-        auto response = llm->generate(messages, default_cfg);
+        auto response = llm->generate(messages, test_config);
         if (response.is_ok()) {
             std::cout << "User: What is the capital of Nigeria?\n";
             std::cout << "Assistant: " << response.value() << "\n\n";
@@ -147,7 +163,7 @@ int main() {
         for (const auto& user_msg : user_msgs) {
             conversation.push_back(Message::user(user_msg));
             
-            auto reply = llm->generate(conversation, default_cfg);
+            auto reply = llm->generate(conversation, test_config);
             if (reply.is_ok()) {
                 conversation.push_back(Message::assistant(reply.value()));
                 std::cout << "User: " << user_msg << "\n";
@@ -163,6 +179,10 @@ int main() {
     std::cout << "   - Memory zeroed after use\n";
     
     std::cout << "\nLLM integration ready!\n\n";
+
+    #ifdef _WIN32
+        WSACleanup();
+    #endif
     
     return 0;
 }
