@@ -80,6 +80,13 @@ static security::Result<std::string> curl_request(
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_header.c_str());
+    // 
+    headers = curl_slist_append(headers, "HTTP-Referer: https://github.com");
+    headers = curl_slist_append(headers, "X-Title: chaincpp-framework");
+
+    struct curl_slist* host_list = nullptr;
+    host_list = curl_slist_append(host_list, "openrouter.ai:443:104.21.37.243");
+    host_list = curl_slist_append(host_list, "openrouter.ai:443:172.67.209.117");
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
@@ -87,16 +94,20 @@ static security::Result<std::string> curl_request(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
-    
-    // FIX FOR WINDOWS HOSTNAME RESOLUTION BUG:
-    // This tells libcurl to ignore broken asynchronous thread lookups on Windows 10/11
+
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_DNS_USE_GLOBAL_CACHE, 0L);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    // force libcurl to use the native Windows system proxy engine
+    // This tells static MinGW binaries to borrow the browser's active network rules.
+    curl_easy_setopt(curl, CURLOPT_PROXY, "");
+    
+    // Standard Windows-MinGW safety flags
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     
     // Switch to Windows Native Security Channel to bypass local engine handshake drops
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // Bypass certificate caching lookups
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-
 
     // Host resolution workaround (if needed, can be removed in production)
     struct curl_slist* host_mapping = nullptr;
@@ -110,6 +121,9 @@ static security::Result<std::string> curl_request(
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     
     curl_slist_free_all(headers);
+    if (host_list){
+        curl_slist_free_all(host_list);
+    }
     curl_slist_free_all(host_mapping);
     curl_easy_cleanup(curl);
     
@@ -212,11 +226,21 @@ security::Result<std::string> OpenAIChat::make_request(
     if (on_chunk) {
         return security::Result<std::string>::ok("");
     }
-    
-    json response_json = json::parse(response.value());
-    return security::Result<std::string>::ok(
-        response_json["choices"][0]["message"]["content"].get<std::string>()
-    );
+
+    // Safe JSON parsking: Catch HTML errors gracefully
+    try {
+        json response_json = json::parse(response.value());
+        if (response_json.contains("choices") && response_json["choices"].is_array() && !response_json["choices"].empty()) {
+            return security::Result<std::string>::ok(
+                response_json["choices"][0]["message"]["content"].get<std::string>()
+            );
+        } 
+        return security::Result<std::string>::err("Unexpected JSON structure: " + response.value());
+    } catch (const std::exception& e) {
+        // If it fails to parse, it means OpenRouter sent back an HTML error page.
+        // We print the raw text out so we can see EXACTLY what Cloudflare or OpenRouter is complaining about.
+        return security::Result<std::string>::err("Failed to parse JSON response. Raw response: " + response.value() + ". Error: " + e.what());
+    }
 }
 
 size_t OpenAIChat::count_tokens(const std::string& text) const {
