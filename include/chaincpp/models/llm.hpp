@@ -69,9 +69,7 @@ public:
     virtual size_t count_tokens(const std::string& text) const = 0;
 };
 
-// ============================================================================
 // OpenAI Implementation
-// ============================================================================
 
 class OpenAIChat : public BaseLLM {
 public:
@@ -145,9 +143,33 @@ private:
     Config config_;
 };
 
-// ============================================================================
+// Helper class for model discovery
+class ModelRegistry {
+public:
+    static std::vector<std::string> get_free_models() {
+        return {
+            "google/gemma-2-2b-it",
+            "microsoft/phi-2",
+            "meta-llama/llama-3-8b-instruct",
+            "mistralai/mistral-7b-instruct",
+            "nousresearch/hermes-2-pro-mistral-7b"
+        };
+    }
+    
+    static security::Result<ModelConfig> get_best_free_config() {
+        ModelConfig config;
+        auto free_models = get_free_models();
+        if (free_models.empty()) {
+            return security::Result<ModelConfig>::err("No free models available");
+        }
+        config.model_name = free_models[0];
+        config.temperature = 0.7f;
+        config.max_tokens = 200;
+        return security::Result<ModelConfig>::ok(config);
+    }
+};
+
 // Local LLM (llama.cpp integration)
-// ============================================================================
 
 class LocalLLM : public BaseLLM {
 public:
@@ -185,4 +207,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace chaincpp::models
+}
