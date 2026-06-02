@@ -211,6 +211,11 @@ security::Result<std::string> OpenAIChat::make_request(
     
     std::string body = request_body.dump();
     std::string auth_header = "Authorization: Bearer " + api_key_.to_string();
+
+    if (config_.base_url.find("openrouter.ai") != std::string::npos) {
+        auth_header += "\nHTTP-Referer: https://github.com/Toyse-web/chaincpp";
+        auth_header += "\nX-Title: chaincpp-framework";
+    }
     
     if (!config_.organization.empty()) {
         auth_header += "\nOpenAI-Organization: " + config_.organization;
@@ -230,6 +235,12 @@ security::Result<std::string> OpenAIChat::make_request(
     // Safe JSON parsking: Catch HTML errors gracefully
     try {
         json response_json = json::parse(response.value());
+
+        if (response_json.contains("error")) {
+            auto error_msg = response_json["error"]["message"].get<std::string>();
+            return security::Result<std::string>::err("API Error: " + response_json["error"]["message"].get<std::string>());
+        }
+        
         if (response_json.contains("choices") && response_json["choices"].is_array() && !response_json["choices"].empty()) {
             return security::Result<std::string>::ok(
                 response_json["choices"][0]["message"]["content"].get<std::string>()
