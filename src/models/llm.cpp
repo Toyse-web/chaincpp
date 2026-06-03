@@ -101,13 +101,20 @@ static security::Result<std::string> curl_request(
     // This tells static MinGW binaries to borrow the browser's active network rules.
     curl_easy_setopt(curl, CURLOPT_PROXY, "");
     
+    #if defined(_WIN32) 
+        // Use windows certificate store
+        curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+    #elif defined(__APPLE__)
+        // Use macOS Keychain
+        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/cert.pem");
+    #else
+        // Linux - use system CA bundle
+        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
+    #endif
+
     // Standard Windows-MinGW safety flags
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    
-    // Switch to Windows Native Security Channel to bypass local engine handshake drops
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // Bypass certificate caching lookups
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
     // Host resolution workaround (if needed, can be removed in production)
     struct curl_slist* host_mapping = nullptr;
