@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Find Dependencies
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(libsodium REQUIRED)
 
 # Build options
 option(BUILD_TESTS "Build tests" ON)
@@ -44,6 +45,7 @@ target_link_libraries(chaincpp
     PUBLIC
     CURL::libcurl
     nlohmann_json::nlohmann_json
+    libsodium::libsodium
 )
 
 # Platform-specific libraries for security features
