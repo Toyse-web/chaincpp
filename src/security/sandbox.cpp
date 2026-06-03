@@ -119,41 +119,45 @@ Result<void> Sandbox::execute_safe(
     std::function<Result<void>()> func,
     const SecurityLimits& limits
 ) {
+    // Document: func MUST NOT capture stack variables by reference if timeout is possible
+    // Better: Use processes instead of threads for true sandboxing
     if (!set_memory_limit(limits.max_memory_bytes)) {
         return Result<void>::err("Failed to set memory limit");
     }
-    
-    if (!set_time_limit(limits.timeout)) {
-        return Result<void>::err("Failed to set time limit");
-    }
-    
-    sanitize_environment();
+
+     sanitize_environment();
     
     std::atomic<bool> completed{false};
+    std::atomic<bool> timed_out{false};
     std::string error_msg;
+    Result<void> func_result;
     
     std::thread worker([&]() {
         auto result = func();
-        if (result.is_err()) {
-            error_msg = result.error();
+        if (!timed_out) {
+            if (result.is_err()) {
+                error_msg = result.error();
+            } else {
+                func_result = std::move(result);
+            }
+            completed = true;
         }
-        completed = true;
     });
-    
     auto start = std::chrono::steady_clock::now();
-    bool timeout_occurred = false;
-
+   
     while (!completed) {
         if (std::chrono::steady_clock::now() - start > limits.timeout) {
-            timeout_occurred = true;
+            timed_out = true;
+            // We can't kill the thread, but we can stop waiting for it
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    if (timeout_occurred) {
-        worker.detach(); // Allow thread to die in background
-        return Result<void>::err("Execution timeout exceeded");
+    if (timed_out) {
+        // Detach and let it finish - but func must NOT have stack references
+        worker.detach();
+        return Result<void>::err("Execution timeout exceeded (func may continue in background)");
     }
     
     if (worker.joinable()) {
@@ -164,7 +168,52 @@ Result<void> Sandbox::execute_safe(
         return Result<void>::err(error_msg);
     }
     
-    return Result<void>::ok();
+     return func_result.is_ok() ? Result<void>::ok() : Result<void>::err("Function failed");
 }
 
-} // namespace chaincpp::security
+// Better solution: Process-based sandboxing
+Result<void> Sandbox::execute_in_process(
+    std::function<int()> func,
+    const SecurityLimits& limits
+) {
+#ifdef _WIN32
+    // Create a separate process with job object limits
+    // This is complex but the only truly safe way
+    // For v0.1, document the thread limitation
+#else
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child process
+        set_memory_limit(limits.max_memory_bytes);
+        set_time_limit(limits.timeout);
+        sanitize_environment();
+        
+        int result = func();
+        exit(result);
+    } else if (pid > 0) {
+        // Parent process
+        int status;
+        auto start = std::chrono::steady_clock::now();
+        
+        while (true) {
+            if (waitpid(pid, &status, WNOHANG) > 0) {
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                    return Result<void>::ok();
+                } else {
+                    return Result<void>::err("Process failed");
+                }
+            }
+            
+            if (std::chrono::steady_clock::now() - start > limits.timeout) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                return Result<void>::err("Timeout");
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+#endif
+    return Result<void>::err("Process creation failed");
+}
+}
