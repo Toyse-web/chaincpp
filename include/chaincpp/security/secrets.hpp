@@ -63,6 +63,8 @@ public:
     
 private:
     SecretsManager() = default;
+
+    class EncryptionImpl;
     
     // Platform-specific secure storage
     bool store_secure(const std::string& service, const std::vector<uint8_t>& encrypted);
@@ -98,4 +100,4 @@ private:
     bool valid_ = false;
 };
 
-} // namespace chaincpp::security
+}
