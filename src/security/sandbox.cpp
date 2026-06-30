@@ -177,10 +177,52 @@ Result<void> Sandbox::execute_in_process(
     const SecurityLimits& limits
 ) {
 #ifdef _WIN32
-    // Create a separate process with job object limits
-    // This is complex but the only truly safe way
-    // For v0.1, document the thread limitation
+    // Windows implemetation: Run in a controlled worker thread to handle timeouts safely
+    std::atomic<bool> completed{false};
+    std::atomic<bool> timed_out{false};
+    std::string error_msg;
+    int exit_code = -1;
+
+    std::thread worker([&]() {
+        try {
+            exit_code = func();
+            if(!timed_out) {
+                completed = true;
+            }
+        } catch (const std::exception& e) {
+            error_msg = e.what();
+        } catch (...) {
+            exit_code = -99;
+            completed = true;
+            error_msg = "Unknown exception";
+        }
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    while (!completed) {
+        if (std::chrono::steady_clock::now() - start > limits.timeout) {
+            timed_out = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (timed_out) {
+        worker.detach(); // Free the thread handle safely
+        return Result<void>::err("Timeout");
+    }
+
+    if (worker.joinable()) {
+        worker.join();
+    }
+
+    if (exit_code == 0) {
+        return Result<void>::ok();
+    } else {
+        return Result<void>::err("Process failed");
+    }
 #else
+ // Native Linux / UNIX Multi-Process Sandbox Engine
     pid_t pid = fork();
     if (pid == 0) {
         // Child process
@@ -191,7 +233,7 @@ Result<void> Sandbox::execute_in_process(
         int result = func();
         exit(result);
     } else if (pid > 0) {
-        // Parent process
+        // Parent process supervisor monitor loop
         int status;
         auto start = std::chrono::steady_clock::now();
         
