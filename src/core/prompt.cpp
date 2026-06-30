@@ -64,6 +64,20 @@ std::string OutputSanitizer::escape_html(std::string_view input) {
 
 std::string OutputSanitizer::escape(std::string_view input, Context context) {
     switch (context) {
+        case Context::SQL: {
+            std::string escaped;
+            escaped.reserve(input.size() * 1.1); // Reserve basic padding
+            for (char c : input) {
+                if (c == '\'') {
+                    escaped += "''"; // Escape single quote for SQL databases
+                } else if (c == '\\') {
+                    escaped += "\\\\"; // Avoid escape sequence vulnerabilities
+                } else {
+                    escaped += c;
+                }
+            }
+            return escaped;
+        }
         case Context::JSON:  return escape_json(input);
         case Context::SHELL: return escape_shell(input);
         case Context::HTML:  return escape_html(input);
@@ -227,7 +241,6 @@ security::Result<std::string> PromptTemplate::format(
 
     // Build result in one pass using stringstream
     std::ostringstream result;
-    size_t last_pos = 0;
     std::string temp = template_str_;
 
     // sort variables by position for single pass replacement
