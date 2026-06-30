@@ -2,6 +2,7 @@
 #include <iostream>
 #include <vector>
 #include <chrono> // Added for timing
+#include <thread>
 
 using namespace chaincpp::security;
 
@@ -21,10 +22,10 @@ int main() {
         });
         
         if (result.is_ok()) {
-            std::cout << "✓ PASSED\n";
+            std::cout << "PASSED\n";
             tests_passed++;
         } else {
-            std::cout << "✗ FAILED: " << result.error() << "\n";
+            std::cout << "FAILED: " << result.error() << "\n";
             tests_failed++;
         }
     }
@@ -51,23 +52,19 @@ int main() {
         auto start = std::chrono::steady_clock::now();
         
         auto result = Sandbox::execute_safe([]() -> Result<void> {
-            // Infinite loop to trigger timeout
-            volatile int x = 0;
-            while (true) {
-                x = x + 1; // FIXED: Changed x++ to x = x + 1 for C++20 compatibility
-                if (x > 1000000000) break; // Safety break
-            }
+            // Sleep for 2 seconds to force a 1-second timeout breach
+            std::this_thread::sleep_for(std::chrono::seconds(2));
             return Result<void>::ok();
         }, SecurityLimits::strict());
         
         auto elapsed = std::chrono::steady_clock::now() - start;
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
         
-        if (result.is_err() && result.error() == "Execution timeout exceeded") {
-            std::cout << "✓ PASSED (timeout after " << elapsed_ms.count() << "ms)\n";
+        if (result.is_err() && result.error().find("Execution timeout exceeded") != std::string::npos) {
+            std::cout << "PASSED (timeout detected after " << elapsed_ms.count() << "ms)\n";
             tests_passed++;
         } else {
-            std::cout << "✗ FAILED (expected timeout)\n";
+            std::cout << "FAILED (expected timeout error, got: " << (result.is_ok() ? "Success" : result.error()) << ")\n";
             tests_failed++;
         }
     }
@@ -84,10 +81,10 @@ int main() {
         });
         
         if (result.is_ok()) {
-            std::cout << "✓ PASSED\n";
+            std::cout << "PASSED\n";
             tests_passed++;
         } else {
-            std::cout << "✗ FAILED\n";
+            std::cout << "FAILED\n";
             tests_failed++;
         }
     }
@@ -108,10 +105,10 @@ int main() {
         }
         
         if (all_ok) {
-            std::cout << "✓ PASSED\n";
+            std::cout << "PASSED\n";
             tests_passed++;
         } else {
-            std::cout << "✗ FAILED\n";
+            std::cout << "FAILED\n";
             tests_failed++;
         }
     }
@@ -133,7 +130,7 @@ int main() {
             return Result<void>::ok();
         }, strict_limits);
         
-        std::cout << "✓ PASSED (handled gracefully)\n";
+        std::cout << "PASSED (handled gracefully)\n";
         tests_passed++;
     }
     
