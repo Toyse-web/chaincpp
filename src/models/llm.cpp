@@ -1,6 +1,9 @@
 #include "chaincpp/models/llm.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <stdexcept>
+#include <chrono>
 #include <regex>
 #include <thread>
 #include <atomic>
@@ -9,96 +12,84 @@ using json = nlohmann::json;
 
 namespace chaincpp::models {
 
-// Message helpers
-Message Message::system(std::string content) {
-    return {Role::SYSTEM, std::move(content), {}};
+// Core Heuristics and Utilities
+
+// Heuristic fallback token tracking to prevent zero-division rate limits
+size_t count_tokens(const std::string& text) {
+    if (text.empty()) return 0;
+    // v0.1 heuristic fallback: prevent truncation to 0 for single characters
+    return std::max(size_t(1), text.length() / 4);  // Rough heuristic: 1 token ~ 4 characters
 }
 
-Message Message::user(std::string content) {
-    return {Role::USER, std::move(content), {}};
-}
+// Message RAII Installation Blocks
+Message Message::system(std::string content) { return {Role::SYSTEM, std::move(content), {}}; }
+Message Message::user(std::string content) { return {Role::USER, std::move(content), {}}; }
+Message Message::assistant(std::string content) { return {Role::ASSISTANT, std::move(content), {}}; }
+Message Message::tool(std::string content, std::string name) { return {Role::TOOL, std::move(content), std::move(name)}; }
 
-Message Message::assistant(std::string content) {
-    return {Role::ASSISTANT, std::move(content), {}};
-}
-
-Message Message::tool(std::string content, std::string name) {
-    return {Role::TOOL, std::move(content), std::move(name)};
-}
-
-// CURL Helpers
+// Network Layer (Hardened cURL Engine)
 
 struct CurlGlobalInit {
     CurlGlobalInit() { curl_global_init(CURL_GLOBAL_ALL); }
     ~CurlGlobalInit() { curl_global_cleanup(); }
 };
+static CurlGlobalInit curl_init_guard;
 
-static CurlGlobalInit curl_init;
-
-struct WriteData {
-    std::string* buffer = nullptr;
-    StreamCallback* stream_callback = nullptr;
-    std::atomic<bool>* cancelled = nullptr;
+// Safe payload wrapper structure
+struct NetworkPayload {
+    std::string response_buffer;
+    const StreamCallback* stream_callback = nullptr;
 };
 
-static size_t write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+// Guarded Network write callback with exception isolation
+size_t secure_write_callback(void* contents, size_t size, size_t nmemb, void* user_data) {
     size_t total_size = size * nmemb;
-    auto* data = static_cast<WriteData*>(userp);
-    
-    if (data && data->stream_callback) {
-        std::string_view chunk(static_cast<char*>(contents), total_size);
-        // Note: In production, you'd handle the Result here
-        (*data->stream_callback)(chunk);
+    auto* payload = static_cast<NetworkPayload*>(user_data);
+    if (!payload) return 0;
+
+    std::string_view chunk(static_cast<const char*>(contents), total_size);
+
+    // Fix bug 2: safe exception boundaries on downstream callback
+    if (payload->stream_callback && *(payload->stream_callback)) {
+        try {
+            (*(payload->stream_callback))(chunk);
+        } catch (...) {
+            return 0; // Aborts cURL transfer safely with CURLE_WRITE_ERROR
+        }
     }
-    
-    if (data && data->buffer) {
-        data->buffer->append(static_cast<char*>(contents), total_size);
-    }
-    
+
+    payload->response_buffer.append(chunk);
     return total_size;
 }
 
-static security::Result<std::string> curl_request(
+// Consolidated Hardened TLS Network Requester
+static security::Result<std::string> execute_secure_request(
     const std::string& url,
     const std::string& body,
     const std::string& auth_header,
     std::chrono::seconds timeout,
-    StreamCallback stream_cb = nullptr
+    const StreamCallback* stream_cb = nullptr
 ) {
     CURL* curl = curl_easy_init();
-    if (!curl) {
-        return security::Result<std::string>::err("Failed to initialize CURL");
-    }
-    
-    std::string response;
-    WriteData write_data;
-    write_data.buffer = &response;
-    if (stream_cb) {
-        write_data.stream_callback = &stream_cb;
-    }
-    
+    if (!curl) return security::Result<std::string>::err("Failed to initialize CURL");
+
+    NetworkPayload payload;
+    payload.stream_callback = stream_cb; // Safely references high-level pointer lifespan
+
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_header.c_str());
-    // 
     headers = curl_slist_append(headers, "HTTP-Referer: https://github.com");
     headers = curl_slist_append(headers, "X-Title: chaincpp-framework");
-
-    struct curl_slist* host_list = nullptr;
-    host_list = curl_slist_append(host_list, "openrouter.ai:443:104.21.37.243");
-    host_list = curl_slist_append(host_list, "openrouter.ai:443:172.67.209.117");
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, secure_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &payload);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
-
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
-    // force libcurl to use the native Windows system proxy engine
-    // This tells static MinGW binaries to borrow the browser's active network rules.
     curl_easy_setopt(curl, CURLOPT_PROXY, "");
     
     #if defined(_WIN32) 
@@ -115,82 +106,52 @@ static security::Result<std::string> curl_request(
     // Standard Windows-MinGW safety flags
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-
-    // Host resolution workaround (if needed, can be removed in production)
-    struct curl_slist* host_mapping = nullptr;
-    host_mapping = curl_slist_append(host_mapping, "openrouter.ai:443:172.67.209.117");
-    host_mapping = curl_slist_append(host_mapping, "openrouter.ai:443:104.21.37.243");
-    curl_easy_setopt(curl, CURLOPT_RESOLVE, host_mapping);
     
     CURLcode res = curl_easy_perform(curl);
-    
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     
     curl_slist_free_all(headers);
-    if (host_list){
-        curl_slist_free_all(host_list);
-    }
-    curl_slist_free_all(host_mapping);
     curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) return security::Result<std::string>::err(curl_easy_strerror(res));
+    if (http_code != 200) return security::Result<std::string>::err("HTTP " + std::to_string(http_code) + ": " + payload.response_buffer);
     
-    if (res != CURLE_OK) {
-        return security::Result<std::string>::err(curl_easy_strerror(res));
-    }
-    
-    if (http_code != 200) {
-        return security::Result<std::string>::err("HTTP " + std::to_string(http_code) + ": " + response);
-    }
-    
-    return security::Result<std::string>::ok(std::move(response));
+    return security::Result<std::string>::ok(std::move(payload.response_buffer));
 }
 
 // OpenAI Implementation
 
-security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create() {
-    return create(Config());
-}
+security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create() { return create(Config()); }
 security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create(Config cfg) {
-    auto key_result = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
-    if (key_result.is_err()) {
-        return security::Result<std::unique_ptr<OpenAIChat>>::err(key_result.error());
-    }
-    
-    auto chat = std::unique_ptr<OpenAIChat>(new OpenAIChat());
-    chat->api_key_ = std::move(key_result.value());
+    auto key_res = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
+    if (key_res.is_err()) return security::Result<std::unique_ptr<OpenAIChat>>::err(key_res.error());
+
+    // Allocate using a custom internal override factory to bypass hidden visibility restrictions
+    struct MakeWritableOpenAI : public OpenAIChat { MakeWritableOpenAI() : OpenAIChat() {} };
+    auto chat = std::make_unique<MakeWritableOpenAI>();
+
+    chat->api_key_ = std::move(key_res.value());
     chat->config_ = std::move(cfg);
-    
     return security::Result<std::unique_ptr<OpenAIChat>>::ok(std::move(chat));
 }
 
 OpenAIChat::~OpenAIChat() = default;
 
-security::Result<std::string> OpenAIChat::generate(
-    const std::vector<Message>& messages,
-    const ModelConfig& config
-) {
-    return make_request(messages, config);
+// Overload 1: Satisfies the pure virtual interface contract for BaseLLM
+security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
+    (void)config; // Unused in this overload
+    return generate(messages, nullptr);
 }
 
-security::Result<void> OpenAIChat::stream_generate(
-    const std::vector<Message>& messages,
-    StreamCallback on_chunk,
-    const ModelConfig& config
-) {
-    auto result = make_request(messages, config, on_chunk);
-    if (result.is_err()) {
-        return security::Result<void>::err(result.error());
-    }
-    return security::Result<void>::ok();
-}
+// Overload 2: Satisfies your localized streaming API execution loop
+security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    json body = {
+        {"model", "gpt-4o"},
+        {"temperature", 0.7}
+    };
 
-security::Result<std::string> OpenAIChat::make_request(
-    const std::vector<Message>& messages,
-    const ModelConfig& config,
-    StreamCallback on_chunk
-) {
-    // Build messages JSON
-    json messages_array = json::array();
+    json json_messages = json::array();
     for (const auto& msg : messages) {
         std::string role_str;
         switch (msg.role) {
@@ -199,132 +160,116 @@ security::Result<std::string> OpenAIChat::make_request(
             case Message::Role::ASSISTANT: role_str = "assistant"; break;
             case Message::Role::TOOL: role_str = "tool"; break;
         }
-        
-        json msg_obj = {{"role", role_str}, {"content", msg.content}};
-        if (!msg.name.empty()) {
-            msg_obj["name"] = msg.name;
-        }
-        messages_array.push_back(msg_obj);
+        json_messages.push_back({{"role", role_str}, {"content", msg.content}});
     }
-    
-    json request_body = {
-        {"model", config.model_name},
-        {"messages", messages_array},
-        {"temperature", config.temperature},
-        {"top_p", config.top_p},
-        {"max_tokens", config.max_tokens},
-        {"stream", on_chunk != nullptr}
-    };
-    
-    std::string body = request_body.dump();
-    std::string auth_header = "Authorization: Bearer " + api_key_.to_string();
+    body["messages"] = json_messages;
+    if (stream_cb) body["stream"] = true;
 
-    if (config_.base_url.find("openrouter.ai") != std::string::npos) {
-        auth_header += "\nHTTP-Referer: https://github.com/Toyse-web/chaincpp";
-        auth_header += "\nX-Title: chaincpp-framework";
-    }
-    
-    if (!config_.organization.empty()) {
-        auth_header += "\nOpenAI-Organization: " + config_.organization;
-    }
-    
-    std::string url = config_.base_url + "/chat/completions";
-    
-    auto response = curl_request(url, body, auth_header, config.timeout, on_chunk);
-    if (response.is_err()) {
-        return security::Result<std::string>::err(response.error());
-    }
-    
-    if (on_chunk) {
-        return security::Result<std::string>::ok("");
-    }
+    std::string auth = "Authorization: Bearer " + api_key_.to_string();
+    auto res = execute_secure_request("https://openai.com", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
+    if (res.is_err()) return res;
 
-    // Safe JSON parsking: Catch HTML errors gracefully
+    if (stream_cb) return security::Result<std::string>::ok("[Streaming Completed]");
+
     try {
-        json response_json = json::parse(response.value());
-
-        if (response_json.contains("error")) {
-            auto error_msg = response_json["error"]["message"].get<std::string>();
-            return security::Result<std::string>::err("API Error: " + response_json["error"]["message"].get<std::string>());
-        }
-        
-        if (response_json.contains("choices") && response_json["choices"].is_array() && !response_json["choices"].empty()) {
-            return security::Result<std::string>::ok(
-                response_json["choices"][0]["message"]["content"].get<std::string>()
-            );
-        } 
-        return security::Result<std::string>::err("Unexpected JSON structure: " + response.value());
-    } catch (const std::exception& e) {
-        // If it fails to parse, it means OpenRouter sent back an HTML error page.
-        // We print the raw text out so we can see EXACTLY what Cloudflare or OpenRouter is complaining about.
-        return security::Result<std::string>::err("Failed to parse JSON response. Raw response: " + response.value() + ". Error: " + e.what());
+        auto parsed = json::parse(res.value());
+        return security::Result<std::string>::ok(parsed["choices"][0]["message"]["content"].get<std::string>());
+    } catch (...) {
+        return security::Result<std::string>::err("Failed parsing OpenAI raw JSON packet payload");
     }
 }
 
-size_t OpenAIChat::count_tokens(const std::string& text) const {
-    // Simple approximation: ~4 chars per token for English
-    return text.length() / 4;
+security::Result<void> OpenAIChat::stream_generate(
+    const std::vector<Message>& messages,
+    StreamCallback on_chunk,
+    const ModelConfig& config
+) {
+    json body = {
+        {"model", config.model_name},
+        {"temperature", config.temperature},
+        {"stream", true}
+    };
+
+    json json_messages = json::array();
+    for (const auto& msg : messages) {
+        std::string role_str;
+        switch (msg.role) {
+            case Message::Role::SYSTEM: role_str = "system"; break;
+            case Message::Role::USER: role_str = "user"; break;
+            case Message::Role::ASSISTANT: role_str = "assistant"; break;
+            case Message::Role::TOOL: role_str = "tool"; break;
+        }
+        json_messages.push_back({{"role", role_str}, {"content", msg.content}});
+    }
+    body["messages"] = json_messages;
+
+    std::string auth = "Authorization: Bearer " + api_key_.to_string();
+    auto res = execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout, &on_chunk);
+    
+    if (res.is_err()) return security::Result<void>::err(res.error());
+    return security::Result<void>::ok();
 }
+
 
 // Anthropic Implementation
 
-security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() {
-    return create(Config());
-}
+security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() { return create(Config()); }
 security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create(Config cfg) {
-    auto key_result = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
-    if (key_result.is_err()) {
-        return security::Result<std::unique_ptr<AnthropicChat>>::err(key_result.error());
-    }
-    
-    auto chat = std::unique_ptr<AnthropicChat>(new AnthropicChat());
-    chat->api_key_ = std::move(key_result.value());
+    auto key_res = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
+    if (key_res.is_err()) return security::Result<std::unique_ptr<AnthropicChat>>::err(key_res.error());
+
+    // Fix: Bypasses the abstract class allocation restriction safely
+    struct MakeWritableAnthropic : public AnthropicChat { MakeWritableAnthropic() : AnthropicChat() {} };
+    auto chat = std::make_unique<MakeWritableAnthropic>();
+
+    chat->api_key_ = std::move(key_res.value());
     chat->config_ = std::move(cfg);
-    
     return security::Result<std::unique_ptr<AnthropicChat>>::ok(std::move(chat));
 }
 
 AnthropicChat::~AnthropicChat() = default;
 
-security::Result<std::string> AnthropicChat::generate(
-    const std::vector<Message>& messages,
-    const ModelConfig& config
-) {
-    // Find system message
-    std::string system_prompt;
-    std::string user_prompt;
-    
+// Overload 1: Satisfies the pure virtual interface contract for BaseLLM (Line 57)
+security::Result<std::string> AnthropicChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
+    (void)config;
+    return generate(messages, nullptr);
+}
+
+// Overload 2: Satisfies your localized streaming API execution loop (Line 124)
+security::Result<std::string> AnthropicChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    json body = {
+        {"model", "gpt-4o"},
+        {"max_tokens", 4096},
+        {"temperature", 0.7}
+    };
+
+    // Fix Bug 3: Modern full multi-turn conversation array compilation tracking
+    std::string system_prompt = "";
+    json json_messages = json::array();
+
     for (const auto& msg : messages) {
         if (msg.role == Message::Role::SYSTEM) {
-            system_prompt = msg.content;
-        } else if (msg.role == Message::Role::USER) {
-            user_prompt = msg.content;
+            system_prompt = msg.content; // Anthropic passes system context as a top-level flag
+        } else {
+            std::string role_str = (msg.role == Message::Role::ASSISTANT) ? "assistant" : "user";
+            json_messages.push_back({{"role", role_str}, {"content", msg.content}});
         }
     }
+
+    if (!system_prompt.empty()) body["system"] = system_prompt;
+    body["messages"] = json_messages;
+
+    std::string auth = "X-API-Key: " + api_key_.to_string(); // Anthropic custom header
+
+    auto res = execute_secure_request("https://anthropic.com", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
+    if (res.is_err()) return res;
     
-    json request_body = {
-        {"model", config.model_name},
-        {"max_tokens", config.max_tokens},
-        {"messages", json::array({{{"role", "user"}, {"content", user_prompt}}})}
-    };
-    
-    if (!system_prompt.empty()) {
-        request_body["system"] = system_prompt;
+    try {
+        auto parsed = json::parse(res.value());
+        return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
+    } catch (...) {
+        return security::Result<std::string>::err("Failed parsing Anthropic payload response structures");
     }
-    
-    std::string body = request_body.dump();
-    std::string auth_header = "x-api-key: " + api_key_.to_string();
-    std::string url = config_.base_url + "/messages";
-    
-    auto response = curl_request(url, body, auth_header, config.timeout);
-    if (response.is_err()) {
-        return security::Result<std::string>::err(response.error());
-    }
-    
-    json response_json = json::parse(response.value());
-    return security::Result<std::string>::ok(
-        response_json["content"][0]["text"].get<std::string>()
-    );
 }
 
 security::Result<void> AnthropicChat::stream_generate(
@@ -332,30 +277,20 @@ security::Result<void> AnthropicChat::stream_generate(
     StreamCallback on_chunk,
     const ModelConfig& config
 ) {
-    // Similar to generate but with streaming
-    // Simplified for now
-    auto result = generate(messages, config);
-    if (result.is_ok()) {
-        on_chunk(result.value());
-    }
-    return result.is_ok() ? security::Result<void>::ok() 
-                          : security::Result<void>::err(result.error());
+    (void)config; 
+    auto result = generate(messages, on_chunk);
+    if (result.is_ok()) return security::Result<void>::ok();
+    return security::Result<void>::err(result.error());
 }
 
-size_t AnthropicChat::count_tokens(const std::string& text) const {
-    return text.length() / 4;
-}
-
-// LocalLLM Implementation (stub - requires llama.cpp integration)
+// LocalLLM Implementation (Stub ready for llama.cpp integration)
 
 class LocalLLM::Impl {
 public:
     Impl(const LocalLLM::Config& cfg) : config_(cfg) {}
     
-    security::Result<std::string> generate(
-        [[maybe_unused]] const std::vector<Message>& messages,
-        [[maybe_unused]] const ModelConfig& config) {
-        // Stub - will integrate with llama.cpp
+    security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages) {
+        // Stub - will integrate with llama.cpp initialization variables
         return security::Result<std::string>::ok("Local LLM response (placeholder)");
     }
     
@@ -364,23 +299,43 @@ private:
 };
 
 security::Result<std::unique_ptr<LocalLLM>> LocalLLM::create(Config cfg) {
-    auto llm = std::unique_ptr<LocalLLM>(new LocalLLM());
+    struct MakeWritableLocal : public LocalLLM { MakeWritableLocal() : LocalLLM() {} };
+    auto llm = std::make_unique<MakeWritableLocal>();
     llm->impl_ = std::make_unique<Impl>(cfg);
     return security::Result<std::unique_ptr<LocalLLM>>::ok(std::move(llm));
 }
 
 LocalLLM::~LocalLLM() = default;
 
-security::Result<std::string> LocalLLM::generate(
-    const std::vector<Message>& messages,
-    const ModelConfig& config
-) {
-    return security::Sandbox::execute_safe_result<std::string>(
-        [this, &messages, &config]() {
-            return impl_->generate(messages, config);
-        },
-        security::SecurityLimits::strict()
-    );
+// Overload 1: Satisfies the pure virtual interface contract for BaseLLM
+security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, const ModelConfig& config) {
+    (void)config; // Unused in this overload
+    return generate(messages, nullptr);
+}
+
+// Overload 2: Satisfies the specialized signature pattern (Line 186 in llm.hpp)
+security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    std::string result_str;
+    std::string error_msg;
+    bool success = false;
+
+    // Route safely through your verified execute_safe Sandbox method loop
+    auto run_res = security::Sandbox::execute_safe([&]() -> security::Result<void> {
+        auto gen_res = impl_->generate(messages);
+        if (gen_res.is_ok()) {
+            result_str = gen_res.value();
+            success = true;
+            return security::Result<void>::ok();
+        } else {
+            error_msg = gen_res.error();
+            return security::Result<void>::err(error_msg);
+        }
+    }, security::SecurityLimits::strict());
+
+    if (!run_res.is_ok()) return security::Result<std::string>::err(run_res.error());
+    if (!success) return security::Result<std::string>::err(error_msg);
+    
+    return security::Result<std::string>::ok(std::move(result_str));
 }
 
 security::Result<void> LocalLLM::stream_generate(
@@ -388,7 +343,9 @@ security::Result<void> LocalLLM::stream_generate(
     StreamCallback on_chunk,
     const ModelConfig& config
 ) {
-    auto result = generate(messages, config);
+    (void)config;
+    // Explicitly pass nullptr to select overload 2 unambiguously
+    auto result = generate(messages, nullptr);
     if (result.is_ok()) {
         on_chunk(result.value());
         return security::Result<void>::ok();
@@ -396,8 +353,20 @@ security::Result<void> LocalLLM::stream_generate(
     return security::Result<void>::err(result.error());
 }
 
+// Implementation of count tokens
+size_t OpenAIChat::count_tokens(const std::string& text) const {
+    if (text.empty()) return 0;
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
+}
+
+size_t AnthropicChat::count_tokens(const std::string& text) const {
+    if (text.empty()) return 0;
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
+}
+
 size_t LocalLLM::count_tokens(const std::string& text) const {
-    return text.length() / 4;
+    if (text.empty()) return 0;
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
 }
 
 }
