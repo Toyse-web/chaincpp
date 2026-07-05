@@ -4,10 +4,10 @@
 using namespace chaincpp::core;
 
 int main() {
-    std::cout << "\n╔════════════════════════════════════════╗\n";
-    std::cout << "║   chaincpp - Secure Prompt System      ║\n";
-    std::cout << "║         Demonstration                  ║\n";
-    std::cout << "╚════════════════════════════════════════╝\n\n";
+    std::cout << "\n========================================\n";
+    std::cout << "|   chaincpp - Secure Prompt System      |\n";
+    std::cout << "|         Demonstration                  |\n";
+    std::cout << "==========================================\n\n";
     
     // Example 1: Basic template usage
     std::cout << "Example 1: Basic Template\n";
