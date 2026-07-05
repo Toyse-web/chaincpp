@@ -30,10 +30,10 @@ Result<void> potentially_dangerous_tool() {
 }
 
 int main() {
-    std::cout << "\n╔════════════════════════════════════════╗\n";
-    std::cout << "║     chaincpp - Secure LLM Library      ║\n";
-    std::cout << "║         Sandbox Demonstration          ║\n";
-    std::cout << "╚════════════════════════════════════════╝\n\n";
+    std::cout << "\n========================================\n";
+    std::cout << "|     chaincpp - Secure LLM Library      |\n";
+    std::cout << "|         Sandbox Demonstration          |\n";
+    std::cout << "==========================================\n\n";
     
     // Example 1: Safe execution
     std::cout << "Example 1: Executing safe tool\n";
