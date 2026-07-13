@@ -97,6 +97,10 @@ if(BUILD_TESTS)
     add_executable(test_models tests/test_models.cpp)
     target_link_libraries(test_models chaincpp)
     add_test(NAME ModelTests COMMAND test_models)
+
+    add_executable(test_agents tests/test_agents.cpp)
+    target_link_libraries(test_agents chaincpp)
+    add_test(NAME AgentRegistrySecurityTests COMMAND test_agents)
 endif()
 
 # Examples
