@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Zstd REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(llama REQUIRED)
 
 # Use PkgConfig to find libsodium safely on Windows/MSYS2
 find_package(PkgConfig REQUIRED)
@@ -56,6 +57,7 @@ target_link_libraries(chaincpp
     nlohmann_json::nlohmann_json
     PkgConfig::LIBSODIUM
     zstd::libzstd_static
+    llama
 )
 
 # Platform-specific libraries for security features
