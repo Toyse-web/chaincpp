@@ -53,7 +53,9 @@ public:
         bool keep_separator = true;
     };
     
-    explicit TextSplitter(Config config = {});
+    explicit TextSplitter(Config config);
+
+    TextSplitter() : TextSplitter(Config()) {}
     
     // Split a single document
     std::vector<DocumentChunk> split_document(const Document& doc) const;
