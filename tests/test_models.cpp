@@ -26,7 +26,6 @@ void test_secrets_manager() {
     auto remove_result = mgr.remove_key("test_service");
     assert(remove_result.is_ok());
     std::cout << "   Key removed\n";
-    
     std::cout << " SecretsManager tests passed\n\n";
 }
 
@@ -39,7 +38,7 @@ void test_openai_creation() {
     if (result.is_ok()) {
         std::cout << "   OpenAI client created (requires OPENAI_API_KEY env var)\n";
     } else {
-        std::cout << "  ℹ OpenAI client not created (no API key): " << result.error() << "\n";
+        std::cout << " OpenAI client not created (no API key): " << result.error() << "\n";
     }
     
     std::cout << " OpenAI creation test complete\n\n";
@@ -67,9 +66,11 @@ void test_token_counting() {
     
     auto openai = OpenAIChat::create();
     if (openai.is_ok()) {
-        size_t tokens = openai.value()->count_tokens("Hello world");
+        // Access via local constant reference to prevent pointer destruction duplication
+        const auto& client = openai.value();
+        size_t tokens = client->count_tokens("Hello world");
         assert(tokens > 0);
-        std::cout << "   Token counting works\n";
+        std::cout << " Token counting works\n";
     }
     
     std::cout << " Token counting tests complete\n\n";
