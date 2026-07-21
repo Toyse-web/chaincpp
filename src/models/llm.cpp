@@ -325,7 +325,7 @@ public:
     bool is_ready() const { return model_ != nullptr && ctx_ != nullptr; }
     
     security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages) {
-        if (is_ready()) {
+        if (!is_ready()) {
             return security::Result<std::string>::err("Local engine failed: GGUF model files not loaded correctly from " + config_.model_path);
         }
 
