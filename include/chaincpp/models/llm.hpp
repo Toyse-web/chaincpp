@@ -95,7 +95,7 @@ public:
     
     size_t count_tokens(const std::string& text) const override;
     
-private:
+protected: // Change from private to protected to remove allocation hacks safely
     OpenAIChat() = default;
     
     security::secure_string api_key_;
@@ -133,7 +133,7 @@ public:
     
     size_t count_tokens(const std::string& text) const override;
     
-private:
+protected:
     AnthropicChat() = default;
     
     security::secure_string api_key_;
@@ -196,7 +196,7 @@ public:
     
     size_t count_tokens(const std::string& text) const override;
     
-private:
+protected:
     LocalLLM() = default;
     
     class Impl;
