@@ -11,6 +11,7 @@
 #include <regex>
 #include <thread>
 #include <atomic>
+#include <mutex>
 
 using json = nlohmann::json;
 
@@ -131,10 +132,8 @@ security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create(Config cfg) {
     auto key_res = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
     if (key_res.is_err()) return security::Result<std::unique_ptr<OpenAIChat>>::err(key_res.error());
 
-    // Allocate using a custom internal override factory to bypass hidden visibility restrictions
-    struct MakeWritableOpenAI : public OpenAIChat { MakeWritableOpenAI() : OpenAIChat() {} };
-    auto chat = std::make_unique<MakeWritableOpenAI>();
-
+    // Safe allocation directly via standard protected constructor
+    auto chat = std::unique_ptr<OpenAIChat>(new OpenAIChat());
     chat->api_key_ = std::move(key_res.value());
     chat->config_ = std::move(cfg);
     return security::Result<std::unique_ptr<OpenAIChat>>::ok(std::move(chat));
@@ -144,15 +143,9 @@ OpenAIChat::~OpenAIChat() = default;
 
 // Overload 1: Satisfies the pure virtual interface contract for BaseLLM
 security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
-    (void)config; // Unused in this overload
-    return generate(messages, nullptr);
-}
-
-// Overload 2: Satisfies your localized streaming API execution loop
-security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
     json body = {
-        {"model", "gpt-4o"},
-        {"temperature", 0.7}
+        {"model", config.model_name},
+        {"temperature", config.temperature}
     };
 
     json json_messages = json::array();
@@ -167,22 +160,23 @@ security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& m
         json_messages.push_back({{"role", role_str}, {"content", msg.content}});
     }
     body["messages"] = json_messages;
-    if (stream_cb) body["stream"] = true;
 
     std::string auth = "Authorization: Bearer " + api_key_.to_string();
-    auto res = execute_secure_request("https://openai.com", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
-    if (res.is_err()) return res;
-
-    if (stream_cb) return security::Result<std::string>::ok("[Streaming Completed]");
-
-    try {
-        auto parsed = json::parse(res.value());
-        return security::Result<std::string>::ok(parsed["choices"][0]["message"]["content"].get<std::string>());
-    } catch (...) {
-        return security::Result<std::string>::err("Failed parsing OpenAI raw JSON packet payload");
-    }
+    return execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout);
 }
 
+// Overload 2: Satisfies localized streaming API execution loop
+security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    ModelConfig default_cfg;
+    if (stream_cb) {
+        return stream_generate(messages, stream_cb, default_cfg).is_ok() 
+            ? security::Result<std::string>::ok("[Streaming Completed]")
+            : security::Result<std::string>::err("Streaming failed");
+    }
+    return generate(messages, default_cfg);
+}
+
+// Dynamic config assignment and clean return mapping logic
 security::Result<void> OpenAIChat::stream_generate(
     const std::vector<Message>& messages,
     StreamCallback on_chunk,
@@ -214,18 +208,17 @@ security::Result<void> OpenAIChat::stream_generate(
     return security::Result<void>::ok();
 }
 
-
 // Anthropic Implementation
 
-security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() { return create(Config()); }
+security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() { 
+    return create(Config()); 
+}
+
 security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create(Config cfg) {
     auto key_res = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
     if (key_res.is_err()) return security::Result<std::unique_ptr<AnthropicChat>>::err(key_res.error());
 
-    // Fix: Bypasses the abstract class allocation restriction safely
-    struct MakeWritableAnthropic : public AnthropicChat { MakeWritableAnthropic() : AnthropicChat() {} };
-    auto chat = std::make_unique<MakeWritableAnthropic>();
-
+    auto chat = std::unique_ptr<AnthropicChat>(new AnthropicChat());
     chat->api_key_ = std::move(key_res.value());
     chat->config_ = std::move(cfg);
     return security::Result<std::unique_ptr<AnthropicChat>>::ok(std::move(chat));
@@ -287,13 +280,21 @@ security::Result<void> AnthropicChat::stream_generate(
     return security::Result<void>::err(result.error());
 }
 
-// LocalLLM Implementation (Stub ready for llama.cpp integration)
+// LocalLLM Engine Private Implementation
+
+static void ensure_llama_backend_init() {
+    // Global thread-safe backend allocation fence
+    static std::once_flag init_flag;
+    std::call_once(init_flag, []() {
+        llama_backend_init();
+    });
+}
 
 class LocalLLM::Impl {
 public:
     Impl(const LocalLLM::Config& cfg) : config_(cfg) {
         // Initialize llama.cpp backend blobal resources exactly once
-        llama_backend_init();
+        ensure_llama_backend_init();
 
         // Configure hardware load properties matching user constraints
         llama_model_params model_params = llama_model_default_params();
@@ -319,12 +320,12 @@ public:
         if (model_) {
             llama_model_free(model_);
         }
-        llama_backend_free();
+        // Global llama_backend_free completely removed from instance destructor to fix memory corruption crashes;
     }
 
     bool is_ready() const { return model_ != nullptr && ctx_ != nullptr; }
     
-    security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages) {
+    security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages, const ModelConfig& config) {
         if (!is_ready()) {
             return security::Result<std::string>::err("Local engine failed: GGUF model files not loaded correctly from " + config_.model_path);
         }
@@ -341,17 +342,52 @@ public:
             return security::Result<std::string>::err("Local engine failure: Failed to extract model vocabulary map.");
         }
 
-        // Tokenize input prompt string into integers matching vocabulary matrices
-        std::vector<llama_token> tokens(raw_prompt.size() + 4);
+        // Exponential allocation expansion loop to prevent token array boundaries truncation
+        std::vector<llama_token> tokens(1024);
         int n_tokens = llama_tokenize(vocab, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
         if (n_tokens < 0) {
-            return security::Result<std::string>::err("Local tokenization tracking array bounds overflow.");
+            tokens.resize(-n_tokens);
+            n_tokens = llama_tokenize(vocab, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
         }
-        tokens.resize(n_tokens);
+        tokens.resize(std::max(0, n_tokens));
 
-        // Simple deterministic greedy sampling token generation loop (placeholder layout for v0.1 inference)
-        std::string result_text = "Local offline execution simulation successful for text input size: " + std::to_string(n_tokens) + " tokens.";
-        return security::Result<std::string>::ok(std::move(result_text));
+        if (tokens.empty()) {
+            return security::Result<std::string>::ok("");
+        }
+
+        // Native autoregressive llama_decode evaluation token stream sampler loop
+        std::string output_response = "";
+        struct llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+        
+        if (llama_decode(ctx_, batch) != 0) {
+            return security::Result<std::string>::err("Local inference failure: Initial batch evaluation matrix sequence failed.");
+        }
+
+        llama_token curr_token = 0;
+        int max_generation_tokens = std::min(static_cast<int>(config.max_tokens), 4096);
+        
+        for (int i = 0; i < max_generation_tokens; ++i) {
+            auto logits = llama_get_logits_ith(ctx_, batch.n_tokens - 1);
+            int vocab_size = llama_vocab_n_tokens(vocab);
+            curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
+
+            if (curr_token == llama_vocab_eos(vocab)) {
+                break; 
+            }
+
+            char piece_buffer[16];
+            int n_chars = llama_token_to_piece(vocab, curr_token, piece_buffer, sizeof(piece_buffer), 0, true);
+            if (n_chars > 0) {
+                output_response.append(piece_buffer, n_chars);
+            }
+
+            batch = llama_batch_get_one(&curr_token, 1);
+            if (llama_decode(ctx_, batch) != 0) {
+                break;
+            }
+        }
+
+        return security::Result<std::string>::ok(std::move(output_response));
     }
     
 private:
@@ -361,8 +397,7 @@ private:
 };
 
 security::Result<std::unique_ptr<LocalLLM>> LocalLLM::create(Config cfg) {
-    struct MakeWritableLocal : public LocalLLM { MakeWritableLocal() : LocalLLM() {} };
-    auto llm = std::make_unique<MakeWritableLocal>();
+    auto llm = std::unique_ptr<LocalLLM>(new LocalLLM());
     llm->impl_ = std::make_unique<Impl>(cfg);
     return security::Result<std::unique_ptr<LocalLLM>>::ok(std::move(llm));
 }
@@ -371,8 +406,8 @@ LocalLLM::~LocalLLM() = default;
 
 // Overload 1: Satisfies the pure virtual interface contract for BaseLLM
 security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, const ModelConfig& config) {
-    (void)config; // Unused in this overload
-    return generate(messages, nullptr);
+    // Forward variables directly to the implementation unit execution chain
+    return impl_->generate(messages, config);
 }
 
 // Overload 2: Satisfies the specialized signature pattern (Line 186 in llm.hpp)
@@ -380,10 +415,11 @@ security::Result<std::string> LocalLLM::generate(const std::vector<Message>& mes
     std::string result_str;
     std::string error_msg;
     bool success = false;
+    ModelConfig default_config;
 
     // Route safely through your verified execute_safe Sandbox method loop
     auto run_res = security::Sandbox::execute_safe([&]() -> security::Result<void> {
-        auto gen_res = impl_->generate(messages);
+        auto gen_res = impl_->generate(messages, default_config);
         if (gen_res.is_ok()) {
             result_str = gen_res.value();
             success = true;
@@ -418,17 +454,17 @@ security::Result<void> LocalLLM::stream_generate(
 // Implementation of count tokens
 size_t OpenAIChat::count_tokens(const std::string& text) const {
     if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
 }
 
 size_t AnthropicChat::count_tokens(const std::string& text) const {
     if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
 }
 
 size_t LocalLLM::count_tokens(const std::string& text) const {
     if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token ~ 4 characters
+    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
 }
 
 }
