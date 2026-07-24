@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <chrono>
-#include <regex>
 #include <thread>
 #include <atomic>
 #include <mutex>
