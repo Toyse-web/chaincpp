@@ -1,35 +1,26 @@
-<!-- # chaincpp - Secure C++ LLM Library
-
-**chaincpp** is a security-first C++ library for building LLM applications, similar to Python's LangChain but with native C++ performance and built-in sandboxing.
-
-## Current Status: Phase 0 - Security Foundation
-
-The sandbox system is complete and production-ready.
-
-## Features
-
-- **Secure sandbox** with resource limits (CPU time, memory)
-- **Platform support** (Windows, Linux, macOS)
-- **Result type** for safe error handling (no exceptions)
-- **Timeout protection** against infinite loops
-- **Memory limit enforcement**
-- **Environment sanitization**
-- **Test suite** with security validation
-
-## Quick Start
-
-### Build
-
-```bash
-mkdir build && cd build
-cmake ..
-cmake --build . -->
-
 # chaincpp
 
 A security-first, high-performance C++20 alternative to LangChain. Built for enterprise environments, regulatory compliance, gaming engines, and low-latency edge computing. 
 
 `chaincpp` delivers an uncompromised defensive baseline with sub-millisecond orchestration overhead, completely removing the need for a heavy Python runtime or un-audited wrappers.
+
+# 9 Line Hero Snippet
+```cpp
+#include "chaincpp/chaincpp.hpp"
+#include <iostream>
+
+int main() {
+    auto llm = chaincpp::models::OpenAIChat::create().value();
+    auto prompt = chaincpp::core::PromptTemplate::create("What is {topic}?").value();
+    
+    // Blisteringly fast, security-hardened piping syntax
+    auto chain = {{"topic", "RAII Memory Isolation"}} | prompt | *llm;
+    
+    std::cout << "Response: " << chain.value() << "\n";
+    return 0;
+}
+
+```
 
 ## Key Advantages over Python Frameworks
 * **10x to 100x Faster Performance**: Compiles directly to native machine code. Orchestration, prompt templating, and memory management execute in microseconds—not milliseconds.
